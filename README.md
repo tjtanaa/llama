@@ -46,6 +46,14 @@ The provided `example.py` can be run on a single or multi-gpu node with `torchru
 torchrun --nproc_per_node MP example.py --ckpt_dir $TARGET_FOLDER/model_size --tokenizer_path $TARGET_FOLDER/tokenizer.model
 ```
 
+## Launch Gradio App
+
+The provided `app.py` can be run on a single or multi-gpu node with `torchrun` and will output completions for two pre-defined prompts. Using `TARGET_FOLDER` as defined in `download.sh`:
+```
+torchrun --nproc_per_node MP app.py --ckpt_dir $TARGET_FOLDER/model_size --tokenizer_path $TARGET_FOLDER/tokenizer.model --port 6767
+```
+
+
 Different models require different MP values:
 
 |  Model | MP |

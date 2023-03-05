@@ -131,6 +131,8 @@ def main(
     )
 
     def complete_prompt(prompt, max_gen_len, temperature, top_p):
+        if max_gen_len > max_seq_len:
+            return f"WARNING: Maximum value of `max_gen_len` is {max_seq_len}."
         if local_rank == 0:
             print(f"local rank: {local_rank} send {prompt}")
             socket.send_string(prompt, zmq.NOBLOCK)
@@ -163,7 +165,7 @@ def main(
                 input_prompt = gr.Textbox(label="input_prompt")
             with gr.Row():
                 max_gen_len = gr.Number(
-                    value=int(max_seq_len), label="max_gen_len (Recommended max value is 256): ", precision=0, interactive=True
+                    value=int(max_seq_len), label=f"max_gen_len (max value is {max_seq_len}): ", precision=0, interactive=True
                 )
             with gr.Row():
                 temperature=gr.Slider(
