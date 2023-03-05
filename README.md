@@ -14,6 +14,26 @@ Then in this repository
 pip install -e .
 ```
 
+## NOTE:
+If you encounter the following issues:
+1. `CUBLAS Runtime Error`. There could be a cuda and cublas missmatched. During installation, the following 
+are installed. 
+- If you have installed nvcc and cudatoolkit on your machine you can uninstall them:
+  ```
+  nvidia-cublas-cu11        11.10.3.66               pypi_0    pypi
+  nvidia-cuda-nvrtc-cu11    11.7.99                  pypi_0    pypi
+  nvidia-cuda-runtime-cu11  11.7.99                  pypi_0    pypi
+  nvidia-cudnn-cu11         8.5.0.96                 pypi_0    pypi
+  ```
+- In my setup, the cuda version installed is 11.4. I have reinstalled older version of pytorch (1.12.1) that is for
+  cuda 11.3.
+2. If you faced issue of `https://stackoverflow.com/questions/74535380/importerror-cannot-import-name-common-safe-ascii-characters-from-charset-nor` . You can downgrade the `charset-normalizer` package to version `2.1.1`. 
+```shell
+pip install charset-normalizer
+```
+
+
+
 ## Download
 
 Once your request is approved, you will receive links to download the tokenizer and model files.

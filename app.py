@@ -15,6 +15,8 @@ from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 import gradio as gr
+import zmq
+
 
 def setup_model_parallel() -> Tuple[int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -27,6 +29,21 @@ def setup_model_parallel() -> Tuple[int, int]:
     # seed must be the same in all processes
     torch.manual_seed(1)
     return local_rank, world_size
+
+def create_socket(local_rank):
+    context = zmq.Context()
+    if local_rank == 0:
+        socket = context.socket(zmq.PUB)
+        socket.bind("tcp://*:6767")
+        print(f"local_rank: {local_rank} create PUB Socket")
+    else:
+        socket = context.socket(zmq.SUB)
+        socket.setsockopt(zmq.RCVHWM, 10)
+        socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        socket.connect("tcp://127.0.0.1:6767")
+        print(f"local_rank: {local_rank} create SUB Socket")
+
+    return context, socket
 
 
 def load(
@@ -68,27 +85,33 @@ def main(
     tokenizer_path: str,
     temperature: float = 0.8,
     top_p: float = 0.95,
-    max_seq_len: int = 512,
+    max_seq_len: int = 256,
     max_batch_size: int = 1,
 ):
     local_rank, world_size = setup_model_parallel()
-    if local_rank > 0:
-        sys.stdout = open(os.devnull, "w")
+    # if local_rank > 0:
+    #     sys.stdout = open(os.devnull, "w")
 
     generator = load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
 
+    context, socket = create_socket(local_rank)
     def complete_prompt(prompt, max_gen_len, temperature, top_p):
+        if local_rank == 0:
+            print(f"local rank: {local_rank} send {prompt}")
+            socket.send_string(prompt, zmq.NOBLOCK)
         results = generator.generate(
             [prompt], max_gen_len=max_gen_len, temperature=temperature, top_p=top_p
         )
         return str(*results)
 
+    model_size = ckpt_dir.split(os.sep)
+
     if local_rank == 0:
         with gr.Blocks() as demo:
             with gr.Row():
-                title = gr.Textbox(value="Llama model size 7B parameters: COMPLETE THE PROMPT",label="title", interactive=False)
+                title = gr.Textbox(value=f"Llama model size {model_size} parameters: COMPLETE THE PROMPT",label="title", interactive=False)
             with gr.Row():
                 description = gr.Textbox(
                     value="""Generations are bad! 
@@ -107,18 +130,28 @@ def main(
                 input_prompt = gr.Textbox(label="input_prompt")
             with gr.Row():
                 max_gen_len = gr.Number(
-                    value=int(256), label="max_gen_len (Recommended max value is 256): ", precision=0, interactive=True
+                    value=int(max_seq_len), label="max_gen_len (Recommended max value is 256): ", precision=0, interactive=True
                 )
             with gr.Row():
-                temperature = gr.Number(
-                    value=float(0.8), label="temperature: ", precision=4, interactive=True
+                temperature=gr.Slider(
+                    label="temperature",
+                    value=0.8,
+                    minimum=0.0,
+                    maximum=1.0,
+                    step=0.01,
+                    interactive=True
                 )
             with gr.Row():
-                top_p = gr.Number(
-                    value=float(0.95), label="top_p: ", precision=4, interactive=True
+                top_p =gr.Slider(
+                    label="top_p",
+                    value=0.95,
+                    minimum=0.0,
+                    maximum=1.0,
+                    step=0.01,
+                    interactive=True
                 )
             with gr.Row():
-                submit_prompt_button = gr.Button("Complete Prompt")
+                submit_prompt_button = gr.Button("Complete the Prompt")
             with gr.Row():
                 output_prompt = gr.Textbox(label="output_prompt")
             
@@ -148,7 +181,23 @@ def main(
         print(("Connect to Port: ", port))
         # sys.stdout.write("Connect to Port: ", os.getenv("GRADIO_SERVER_PORT"))
         sys.stdout.flush()
+        demo.queue(max_size=4)
         demo.launch(server_name="0.0.0.0", server_port=int(port))
+    else:
+        while True:
+            print(f"local_rank:{local_rank} ready to receive prompt. ")
+            try:
+                prompt = socket.recv_string()
+                # prompt = socket.recv()
+                print(f"local_rank:{local_rank} received: {prompt}")
+                sys.stdout.flush()
+                results = complete_prompt(prompt, max_seq_len, temperature, top_p)
+                print(f"local_rank:{local_rank} results: {results}")
+                sys.stdout.flush()
+            except Exception as e:
+                print(repr(e))
+                context.close()
+                break
 
 
 if __name__ == "__main__":
