@@ -30,20 +30,36 @@ def setup_model_parallel() -> Tuple[int, int]:
     torch.manual_seed(1)
     return local_rank, world_size
 
-def create_socket(local_rank):
-    context = zmq.Context()
+def create_prompt_socket(context, local_rank, port):
     if local_rank == 0:
         socket = context.socket(zmq.PUB)
-        socket.bind("tcp://*:6767")
-        print(f"local_rank: {local_rank} create PUB Socket")
+        socket.bind(f"tcp://*:{port}")
+        print(f"Prompt Socket = local_rank: {local_rank} create PUB Socket")
     else:
         socket = context.socket(zmq.SUB)
         socket.setsockopt(zmq.RCVHWM, 10)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        socket.connect("tcp://127.0.0.1:6767")
-        print(f"local_rank: {local_rank} create SUB Socket")
+        socket.connect(f"tcp://127.0.0.1:{port}")
+        time.sleep(1)
+        print(f"Prompt Socket = local_rank: {local_rank} create SUB Socket")
 
-    return context, socket
+    return socket
+
+
+def create_initialization_socket(context, local_rank, port):
+    if local_rank == 0:
+        socket = context.socket(zmq.SUB)
+        socket.setsockopt(zmq.RCVHWM, 10)
+        socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        socket.bind(f"tcp://*:{port}")
+        print(f"Initialize Socket = local_rank: {local_rank} create SUB Socket")
+    else:
+        socket = context.socket(zmq.PUB)
+        socket.connect(f"tcp://127.0.0.1:{port}")
+        print(f"Initialize Socket = local_rank: {local_rank} create PUB Socket")
+        time.sleep(1)
+
+    return socket
 
 
 def load(
@@ -87,16 +103,33 @@ def main(
     top_p: float = 0.95,
     max_seq_len: int = 256,
     max_batch_size: int = 1,
+    port=6789,
 ):
     local_rank, world_size = setup_model_parallel()
     # if local_rank > 0:
     #     sys.stdout = open(os.devnull, "w")
 
+    context = zmq.Context(2)
+    socket = create_prompt_socket(context, local_rank, port - 1)
+    init_socket = create_initialization_socket(context, local_rank, port + 1)
+
+    if local_rank == 0:
+        # when the subscriber process has fully initialized
+        # it will send a message to the master thread
+        # when the master thread has ensured all the 
+        # model weights are loaded, only then the app is launched
+        subscriber_replies = []
+        while len(subscriber_replies) < (world_size - 1):
+            print("ready to initialize: len(subscriber_replies) " + str(len(subscriber_replies)) + "\t world_size: " + str(world_size))
+            prompt = init_socket.recv_string()
+            print(f"local_rank {local_rank}: {prompt}")
+            subscriber_replies.append(subscriber_replies)
+            # time.sleep(0.1)
+
     generator = load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
 
-    context, socket = create_socket(local_rank)
     def complete_prompt(prompt, max_gen_len, temperature, top_p):
         if local_rank == 0:
             print(f"local rank: {local_rank} send {prompt}")
@@ -106,12 +139,12 @@ def main(
         )
         return str(*results)
 
-    model_size = ckpt_dir.split(os.sep)
+    model_size = ckpt_dir.split(os.sep)[-1].upper()
 
     if local_rank == 0:
         with gr.Blocks() as demo:
             with gr.Row():
-                title = gr.Textbox(value=f"Llama model size {model_size} parameters: COMPLETE THE PROMPT",label="title", interactive=False)
+                title = gr.Textbox(value=f"Llama model name {model_size}",label="title", interactive=False)
             with gr.Row():
                 description = gr.Textbox(
                     value="""Generations are bad! 
@@ -160,39 +193,24 @@ def main(
                 inputs=[input_prompt, max_gen_len, temperature, top_p],
                 outputs=[output_prompt]
             )
-        # demo = gr.Interface(
-        #     title="Llama model size 7B parameters",
-        #     description="""Generations are bad! 
-
-        #     Keep in mind these models are not finetuned for question answering. As such, they should be prompted so that the expected answer is the natural continuation of the prompt.
-        #     Here are a few examples of prompts (from [issue#69](https://github.com/facebookresearch/llama/issues/69)) geared towards finetuned models, and how to modify them to get the expected results:
-        #     - Do not prompt with \"What is the meaning of life? Be concise and do not repeat yourself." but with \"I believe the meaning of life is\"
-        #     - Do not prompt with \"Explain the theory of relativity.\" but with \"Simply put, the theory of relativity states that"
-        #     - Do not prompt with \"Ten easy steps to build a website...\" but with \"Building a website can be done in 10 simple steps:\"
-        #     To be able to directly prompt the models with questions / instructions, you can either:
-        #     - Prompt it with few-shot examples so that the model understands the task you have in mind.
-        #     - Finetune the models on datasets of instructions to make them more robust to input prompts.
-        #     We've updated `example.py` with more sample prompts. Overall, always keep in mind that models are very sensitive to prompts (particularly when they have not been finetuned).
-        #     """,
-        #     fn=complete_prompt, 
-        #     inputs="text", 
-        #     outputs="text")
-        port=6789
-        print(("Connect to Port: ", port))
-        # sys.stdout.write("Connect to Port: ", os.getenv("GRADIO_SERVER_PORT"))
         sys.stdout.flush()
         demo.queue(max_size=4)
+            
+        print(("Connect to Port: ", port))
         demo.launch(server_name="0.0.0.0", server_port=int(port))
     else:
         while True:
-            print(f"local_rank:{local_rank} ready to receive prompt. ")
+            # print(f"local_rank:{local_rank} ready to receive prompt.")
+            message = f"local_rank:{local_rank} ready to receive prompt."
+            print(f"local_rank:{local_rank} ready to receive prompt.")
+            init_socket.send_string(message, zmq.NOBLOCK)
             try:
                 prompt = socket.recv_string()
                 # prompt = socket.recv()
                 print(f"local_rank:{local_rank} received: {prompt}")
                 sys.stdout.flush()
                 results = complete_prompt(prompt, max_seq_len, temperature, top_p)
-                print(f"local_rank:{local_rank} results: {results}")
+                # print(f"local_rank:{local_rank} results: {results}")
                 sys.stdout.flush()
             except Exception as e:
                 print(repr(e))
